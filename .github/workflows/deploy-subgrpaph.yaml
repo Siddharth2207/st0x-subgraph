@@ -1,0 +1,70 @@
+name: Deploy subgraph
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Network to deploy to"
+        required: true
+        type: choice
+        options:
+          - arbitrum-one
+          - arbitrum_sepolia
+          - avalanche
+          - base
+          - bsc
+          - mainnet
+          - flare
+          - mumbai
+          - oasis_sapphire
+          - matic
+          - sepolia
+          - songbird
+          - linea
+
+jobs:
+  deploy:
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v30
+        with:
+          nix_conf: |
+            keep-env-derivations = true
+            keep-outputs = true
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 1G
+
+      - name: Generate abis
+        run: ./prep-cyclo.sh
+      
+      - name: Generate subgraph code
+        run: nix develop -c graph codegen
+        working-directory: .
+
+      - name: Build subgraph
+        run: nix develop -c graph build --network ${{ inputs.network }}
+        working-directory: .
+
+      - name: Login to Goldsky
+        run: nix develop -c goldsky login --token ${{ secrets.GOLDSKY_CI }}
+
+      # Check if the repo is clean before deploying.
+      # Exclude subgraph.yaml (updated by build) and address files (updated by script)
+      - run: git diff --exit-code -- . ':!subgraph.yaml'
+      - run: >
+          nix develop -c goldsky subgraph deploy "cyclo-${{ inputs.network }}/$(date -Idate)-$(openssl rand -hex 2)"
+        working-directory: .
