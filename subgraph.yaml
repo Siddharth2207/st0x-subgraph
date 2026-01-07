@@ -3,16 +3,14 @@ indexerHints:
   prune: auto
 schema:
   file: ./schema.graphql
-
 dataSources:
-  # V2 Factory - Creates V2Pool templates when pools are created
   - kind: ethereum
     name: V2Factory
-    network: flare
+    network: base
     source:
-      address: "0x420DD381b31aEf6683db6B902084cB0FFECe40Da"
       abi: PoolFactory
-      startBlock: 30718579
+      address: "0x67fe33484cAF1a8D716b84b779569f79881788Ae"
+      startBlock: 34244043
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.7
@@ -26,14 +24,12 @@ dataSources:
         - event: PoolCreated(indexed address,indexed address,indexed bool,address,uint256)
           handler: handleV2PoolCreated
       file: ./src/v2Factory.ts
-
-  # V3 Factory - Creates V3Pool templates to track pool info
   - kind: ethereum
     name: V3Factory
-    network: flare
+    network: base
     source:
-      address: "0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a"
       abi: CLFactory
+      address: "0xee5ff5bc5f852764b5584d92a4d592a53dc527da"
       startBlock: 30718579
     mapping:
       kind: ethereum/events
@@ -48,14 +44,12 @@ dataSources:
         - event: PoolCreated(indexed address,indexed address,indexed int24,address)
           handler: handleV3PoolCreated
       file: ./src/v3Factory.ts
-
-  # V3 Position Manager - Tracks IncreaseLiquidity and DecreaseLiquidity
   - kind: ethereum
     name: NonfungiblePositionManager
-    network: flare
+    network: base
     source:
-      address: "0x827922686190790b37229fd06084350E74485b72"
       abi: NonfungiblePositionManager
+      address: "0xee5ff5bc5f852764b5584d92a4d592a53dc527da"
       startBlock: 30718579
     mapping:
       kind: ethereum/events
@@ -77,12 +71,10 @@ dataSources:
         - event: Transfer(indexed address,indexed address,indexed uint256)
           handler: handleV3PositionTransfer
       file: ./src/v3PositionManager.ts
-
 templates:
-  # V2 Pool Template - Tracks Mint and Burn events
   - kind: ethereum/contract
     name: V2PoolTemplate
-    network: flare
+    network: base
     source:
       abi: V2Pool
     mapping:
