@@ -1,0 +1,24 @@
+type LPTokenAttribution @entity {
+  id: ID!                      # "{pool}-{user}-{token}"
+  pool: Bytes!
+  user: Bytes!
+  token: Bytes!
+  depositedBalance: BigInt!    # Net deposited (deposits - withdrawals)
+}
+
+# Helper entity to track V3 position ownership and pool info
+type V3Position @entity {
+  id: ID!                      # tokenId
+  owner: Bytes!
+  pool: Bytes!
+  token0: Bytes!
+  token1: Bytes!
+}
+
+# Helper entity to track V2 pool tokens
+type V2Pool @entity {
+  id: ID!                      # pool address
+  token0: Bytes!
+  token1: Bytes!
+}
+

@@ -1,0 +1,19 @@
+{
+    "name": "cyclo",
+    "license": "UNLICENSED",
+    "scripts": {
+      "codegen": "graph codegen",
+      "build": "graph build",
+      "deploy": "graph deploy --node https://api.thegraph.com/deploy/ cyclofinance/cyclo",
+      "create-local": "graph create --node http://localhost:8020/ cyclofinance/cyclo",
+      "remove-local": "graph remove --node http://localhost:8020/ cyclofinance/cyclo",
+      "deploy-local": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 cyclofinance/cyclo",
+      "test": "graph test"
+    },
+    "dependencies": {
+      "@graphprotocol/graph-cli": "0.69.2",
+      "@graphprotocol/graph-ts": "0.32.0"
+    },
+    "devDependencies": { "matchstick-as": "^0.6.0" }
+  }
+  
