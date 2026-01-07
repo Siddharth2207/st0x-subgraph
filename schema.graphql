@@ -17,8 +17,16 @@ type V3Position @entity {
 
 # Helper entity to track V2 pool tokens
 type V2Pool @entity {
-  id: ID!                      # pool address
+  id: ID!
   token0: Bytes!
   token1: Bytes!
+  createdAtBlock: BigInt!
 }
 
+type V3PoolKey @entity {
+  id: ID!
+  pool: Bytes!
+  token0: Bytes!
+  token1: Bytes!
+  tickSpacing: Int!
+}

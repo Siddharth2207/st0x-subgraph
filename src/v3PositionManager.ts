@@ -5,14 +5,15 @@ import {
   Transfer
 } from "../generated/NonfungiblePositionManager/NonfungiblePositionManager"
 import { NonfungiblePositionManager } from "../generated/NonfungiblePositionManager/NonfungiblePositionManager"
-import { CLFactory } from "../generated/NonfungiblePositionManager/CLFactory"
-import { LPTokenAttribution, V3Position, V2Pool } from "../generated/schema"
+import { LPTokenAttribution, V3Position, V2Pool, V3PoolKey } from "../generated/schema"
 
 // Zero address constant
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
-// V3 Factory address for looking up pools
-const V3_FACTORY_ADDRESS = "0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a"
+// Helper to generate V3PoolKey id (must match v3Factory.ts)
+function poolKeyId(token0: Bytes, token1: Bytes, tickSpacing: i32): string {
+  return token0.toHexString() + "-" + token1.toHexString() + "-" + tickSpacing.toString()
+}
 
 function getOrCreateAttribution(
   pool: Bytes,
@@ -33,58 +34,61 @@ function getOrCreateAttribution(
   return attribution
 }
 
-// Get or create V3Position entity and populate pool info from contract call
+// Get or create V3Position entity
+// Uses V3PoolKey lookup (from graph store) instead of getPool() eth_call
+// Returns null if position is not in a whitelisted pool
 function getOrCreatePosition(
   tokenId: BigInt,
-  nftAddress: Address
+  nftAddress: Address,
+  blockNumber: BigInt
 ): V3Position | null {
   let id = tokenId.toString()
   let position = V3Position.load(id)
   
-  if (position == null) {
-    // Need to call positions() to get pool info
-    let nftContract = NonfungiblePositionManager.bind(nftAddress)
-    let positionResult = nftContract.try_positions(tokenId)
-    
-    if (positionResult.reverted) {
-      log.warning("Failed to get position info for tokenId: {}", [id])
-      return null
+  // If position exists, check if it's a rejected (non-whitelisted) position
+  if (position != null) {
+    if (position.pool.toHexString() == ZERO_ADDRESS) {
+      return null  // Cached as rejected - no eth_calls needed
     }
-    
-    let positionData = positionResult.value
-    let token0 = positionData.getToken0()
-    let token1 = positionData.getToken1()
-    let tickSpacing = positionData.getTickSpacing()
-    
-    // Look up the pool address from the factory
-    let factory = CLFactory.bind(Address.fromString(V3_FACTORY_ADDRESS))
-    let poolResult = factory.try_getPool(token0, token1, tickSpacing)
-    
-    if (poolResult.reverted) {
-      log.warning("Failed to get pool for tokens: {} - {} with tickSpacing: {}", [
-        token0.toHexString(),
-        token1.toHexString(),
-        tickSpacing.toString()
-      ])
-      return null
-    }
-    
+    return position
+  }
+  
+  // New position - need 1 eth_call to get token info
+  let nftContract = NonfungiblePositionManager.bind(nftAddress)
+  let positionResult = nftContract.try_positions(tokenId)
+  
+  if (positionResult.reverted) {
+    return null  // Position doesn't exist or was burned
+  }
+  
+  let positionData = positionResult.value
+  let token0 = positionData.getToken0()
+  let token1 = positionData.getToken1()
+  let tickSpacing = positionData.getTickSpacing()
+  
+  // Look up pool from V3PoolKey (graph store) instead of eth_call
+  // V3PoolKey only exists for whitelisted pools (created in handleV3PoolCreated)
+  let key = poolKeyId(token0, token1, tickSpacing)
+  let poolKey = V3PoolKey.load(key)
+  
+  if (poolKey == null) {
+    // No V3PoolKey means pool is not whitelisted - cache as rejected
     position = new V3Position(id)
     position.owner = Bytes.fromHexString(ZERO_ADDRESS)
-    position.pool = poolResult.value
-    position.token0 = token0
-    position.token1 = token1
+    position.pool = Bytes.fromHexString(ZERO_ADDRESS)
+    position.token0 = Bytes.fromHexString(ZERO_ADDRESS)
+    position.token1 = Bytes.fromHexString(ZERO_ADDRESS)
     position.save()
-    
-    // Also ensure the pool is tracked in V2Pool entity (we reuse this for both V2 and V3)
-    let poolEntity = V2Pool.load(poolResult.value.toHexString())
-    if (poolEntity == null) {
-      poolEntity = new V2Pool(poolResult.value.toHexString())
-      poolEntity.token0 = token0
-      poolEntity.token1 = token1
-      poolEntity.save()
-    }
+    return null
   }
+  
+  // Found whitelisted pool - create full position
+  position = new V3Position(id)
+  position.owner = Bytes.fromHexString(ZERO_ADDRESS)
+  position.pool = poolKey.pool
+  position.token0 = token0
+  position.token1 = token1
+  position.save()
   
   return position
 }
@@ -99,7 +103,7 @@ export function handleV3PositionTransfer(event: Transfer): void {
     return
   }
   
-  let position = getOrCreatePosition(tokenId, event.address)
+  let position = getOrCreatePosition(tokenId, event.address, event.block.number)
   if (position == null) {
     return
   }
@@ -114,7 +118,7 @@ export function handleIncreaseLiquidity(event: IncreaseLiquidity): void {
   let amount0 = event.params.amount0
   let amount1 = event.params.amount1
   
-  let position = getOrCreatePosition(tokenId, event.address)
+  let position = getOrCreatePosition(tokenId, event.address, event.block.number)
   if (position == null) {
     log.warning("Position not found for tokenId: {}", [tokenId.toString()])
     return
@@ -163,7 +167,11 @@ export function handleDecreaseLiquidity(event: DecreaseLiquidity): void {
   
   let position = V3Position.load(tokenId.toString())
   if (position == null) {
-    log.warning("Position not found for tokenId: {}", [tokenId.toString()])
+    return  // Position not tracked
+  }
+  
+  // Skip rejected (non-whitelisted) positions
+  if (position.pool.toHexString() == ZERO_ADDRESS) {
     return
   }
   

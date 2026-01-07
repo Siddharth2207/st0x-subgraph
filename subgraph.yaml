@@ -90,7 +90,6 @@ templates:
       eventHandlers:
         - event: Mint(indexed address,uint256,uint256)
           handler: handleV2Mint
-          receipt: true
         - event: Burn(indexed address,uint256,uint256,indexed address)
           handler: handleV2Burn
       file: ./src/v2Pool.ts
