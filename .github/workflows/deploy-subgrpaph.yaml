@@ -63,5 +63,5 @@ jobs:
       # Exclude subgraph.yaml (updated by build) and address files (updated by script)
       - run: git diff --exit-code -- . ':!subgraph.yaml'
       - run: >
-          nix develop -c goldsky subgraph deploy "cyclo-${{ inputs.network }}/$(date -Idate)-$(openssl rand -hex 2)"
+          nix develop -c goldsky subgraph deploy "st0x-rewards-${{ inputs.network }}/$(date -Idate)-$(openssl rand -hex 2)"
         working-directory: .
