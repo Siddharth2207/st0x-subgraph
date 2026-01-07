@@ -68,8 +68,6 @@ dataSources:
           handler: handleIncreaseLiquidity
         - event: DecreaseLiquidity(indexed uint256,uint128,uint256,uint256)
           handler: handleDecreaseLiquidity
-        - event: Transfer(indexed address,indexed address,indexed uint256)
-          handler: handleV3PositionTransfer
       file: ./src/v3PositionManager.ts
 templates:
   - kind: ethereum/contract

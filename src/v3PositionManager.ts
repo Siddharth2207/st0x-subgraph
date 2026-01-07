@@ -1,11 +1,10 @@
-import { BigInt, Bytes, Address, log } from "@graphprotocol/graph-ts"
+import { BigInt, Bytes, Address } from "@graphprotocol/graph-ts"
 import {
   IncreaseLiquidity,
-  DecreaseLiquidity,
-  Transfer
+  DecreaseLiquidity
 } from "../generated/NonfungiblePositionManager/NonfungiblePositionManager"
 import { NonfungiblePositionManager } from "../generated/NonfungiblePositionManager/NonfungiblePositionManager"
-import { LPTokenAttribution, V3Position, V2Pool, V3PoolKey } from "../generated/schema"
+import { LPTokenAttribution, V3Position, V3PoolKey } from "../generated/schema"
 
 // Zero address constant
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -93,26 +92,6 @@ function getOrCreatePosition(
   return position
 }
 
-export function handleV3PositionTransfer(event: Transfer): void {
-  let tokenId = event.params.tokenId
-  let from = event.params.from
-  let to = event.params.to
-  
-  // Skip if burning (to zero address)
-  if (to.toHexString() == ZERO_ADDRESS) {
-    return
-  }
-  
-  let position = getOrCreatePosition(tokenId, event.address, event.block.number)
-  if (position == null) {
-    return
-  }
-  
-  // Update position owner
-  position.owner = to
-  position.save()
-}
-
 export function handleIncreaseLiquidity(event: IncreaseLiquidity): void {
   let tokenId = event.params.tokenId
   let amount0 = event.params.amount0
@@ -120,26 +99,16 @@ export function handleIncreaseLiquidity(event: IncreaseLiquidity): void {
   
   let position = getOrCreatePosition(tokenId, event.address, event.block.number)
   if (position == null) {
-    log.warning("Position not found for tokenId: {}", [tokenId.toString()])
+    return  // Not in a whitelisted pool
+  }
+  
+  // Get current owner from contract (always fetch, since we don't track transfers)
+  let nftContract = NonfungiblePositionManager.bind(event.address)
+  let ownerResult = nftContract.try_ownerOf(tokenId)
+  if (ownerResult.reverted) {
     return
   }
-  
-  // Get the current owner of the position
-  let owner = position.owner
-  
-  // If owner is zero (shouldn't happen normally), try to get from contract
-  if (owner.toHexString() == ZERO_ADDRESS) {
-    let nftContract = NonfungiblePositionManager.bind(event.address)
-    let ownerResult = nftContract.try_ownerOf(tokenId)
-    if (!ownerResult.reverted) {
-      owner = ownerResult.value
-      position.owner = owner
-      position.save()
-    } else {
-      log.warning("Could not determine owner for tokenId: {}", [tokenId.toString()])
-      return
-    }
-  }
+  let owner = ownerResult.value
   
   // Update attribution for token0
   let attribution0 = getOrCreateAttribution(
@@ -175,22 +144,13 @@ export function handleDecreaseLiquidity(event: DecreaseLiquidity): void {
     return
   }
   
-  // Get the current owner of the position
-  let owner = position.owner
-  
-  // If owner is zero (shouldn't happen normally), try to get from contract
-  if (owner.toHexString() == ZERO_ADDRESS) {
-    let nftContract = NonfungiblePositionManager.bind(event.address)
-    let ownerResult = nftContract.try_ownerOf(tokenId)
-    if (!ownerResult.reverted) {
-      owner = ownerResult.value
-      position.owner = owner
-      position.save()
-    } else {
-      log.warning("Could not determine owner for tokenId: {}", [tokenId.toString()])
-      return
-    }
+  // Get current owner from contract (always fetch, since we don't track transfers)
+  let nftContract = NonfungiblePositionManager.bind(event.address)
+  let ownerResult = nftContract.try_ownerOf(tokenId)
+  if (ownerResult.reverted) {
+    return
   }
+  let owner = ownerResult.value
   
   // Update attribution for token0 (subtract)
   let attribution0 = getOrCreateAttribution(
