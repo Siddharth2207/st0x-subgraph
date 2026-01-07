@@ -47,9 +47,6 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 1G
-
-      - name: Generate abis
-        run: ./prep-cyclo.sh
       
       - name: Generate subgraph code
         run: nix develop -c graph codegen
