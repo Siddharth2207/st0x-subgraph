@@ -1,5 +1,5 @@
 import { BigInt, Bytes, Address } from "@graphprotocol/graph-ts"
-import { Mint, Burn, Pool as PoolContract } from "../generated/V2Pool1/Pool"
+import { Mint, Burn, CLPool } from "../generated/V3Pool1/CLPool"
 import { LPTokenAttribution, Pool } from "../generated/schema"
 
 function getOrCreatePool(poolAddress: Address): Pool {
@@ -10,7 +10,7 @@ function getOrCreatePool(poolAddress: Address): Pool {
     pool = new Pool(id)
     
     // Fetch token0 and token1 from the contract
-    let contract = PoolContract.bind(poolAddress)
+    let contract = CLPool.bind(poolAddress)
     let token0Result = contract.try_token0()
     let token1Result = contract.try_token1()
     
@@ -26,7 +26,7 @@ function getOrCreatePool(poolAddress: Address): Pool {
       pool.token1 = Bytes.empty()
     }
     
-    pool.isV3 = false
+    pool.isV3 = true
     pool.save()
   }
   
@@ -48,42 +48,42 @@ function getOrCreateAttribution(pool: Bytes, user: Bytes, token: Bytes): LPToken
   return attribution
 }
 
-export function handleV2Mint(event: Mint): void {
+export function handleV3Mint(event: Mint): void {
   let poolAddress = event.address
   let pool = getOrCreatePool(poolAddress)
   
-  // sender is the LP depositor
-  let depositor = event.params.sender
+  // owner is the LP position owner
+  let owner = event.params.owner
   let amount0 = event.params.amount0
   let amount1 = event.params.amount1
   
   // Update attribution for token0
-  let attribution0 = getOrCreateAttribution(poolAddress, depositor, pool.token0)
+  let attribution0 = getOrCreateAttribution(poolAddress, owner, pool.token0)
   attribution0.depositedBalance = attribution0.depositedBalance.plus(amount0)
   attribution0.save()
   
   // Update attribution for token1
-  let attribution1 = getOrCreateAttribution(poolAddress, depositor, pool.token1)
+  let attribution1 = getOrCreateAttribution(poolAddress, owner, pool.token1)
   attribution1.depositedBalance = attribution1.depositedBalance.plus(amount1)
   attribution1.save()
 }
 
-export function handleV2Burn(event: Burn): void {
+export function handleV3Burn(event: Burn): void {
   let poolAddress = event.address
   let pool = getOrCreatePool(poolAddress)
   
-  // 'to' is the recipient of the withdrawn tokens
-  let withdrawer = event.params.to
+  // owner is the LP position owner
+  let owner = event.params.owner
   let amount0 = event.params.amount0
   let amount1 = event.params.amount1
   
   // Update attribution for token0 (subtract)
-  let attribution0 = getOrCreateAttribution(poolAddress, withdrawer, pool.token0)
+  let attribution0 = getOrCreateAttribution(poolAddress, owner, pool.token0)
   attribution0.depositedBalance = attribution0.depositedBalance.minus(amount0)
   attribution0.save()
   
   // Update attribution for token1 (subtract)
-  let attribution1 = getOrCreateAttribution(poolAddress, withdrawer, pool.token1)
+  let attribution1 = getOrCreateAttribution(poolAddress, owner, pool.token1)
   attribution1.depositedBalance = attribution1.depositedBalance.minus(amount1)
   attribution1.save()
 }
