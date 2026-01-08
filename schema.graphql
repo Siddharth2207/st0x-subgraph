@@ -1,3 +1,4 @@
+# Tracks LP token attribution per user per pool per token
 type LPTokenAttribution @entity {
   id: ID!                      # "{pool}-{user}-{token}"
   pool: Bytes!
@@ -6,19 +7,46 @@ type LPTokenAttribution @entity {
   depositedBalance: BigInt!    # Net deposited (deposits - withdrawals)
 }
 
-# Helper entity to track V3 position ownership and pool info
-type V3Position @entity {
-  id: ID!                      # tokenId
-  owner: Bytes!
+# Tracks LP/liquidity balance per user per pool for proportional withdrawal calculation
+type UserPoolLP @entity {
+  id: ID!                      # "{pool}-{user}"
   pool: Bytes!
-  token0: Bytes!
-  token1: Bytes!
+  user: Bytes!
+  lpBalance: BigInt!           # Total LP tokens or liquidity units held
 }
 
-# Helper entity to track V2 pool tokens
-type V2Pool @entity {
+# Pool entity to cache token0/token1 for each pool
+type Pool @entity {
   id: ID!                      # pool address
   token0: Bytes!
   token1: Bytes!
+  isV3: Boolean!               # true for V3 (CLPool), false for V2
 }
 
+type V2TxRecipient @entity {
+  id: ID!
+  pool: Bytes!
+
+  mint0: BigInt!
+  mint1: BigInt!
+  mintLpAmount: BigInt!        # LP tokens minted
+  mintReady: Boolean!
+
+  mintedTo: Bytes!
+  mintedToReady: Boolean!
+
+  lastLpFrom: Bytes!           # default to ZERO_ADDRESS
+  lastLpAmount: BigInt!        # LP tokens being burned
+}
+
+
+type V3Position @entity {
+  id: ID!              # tokenId as string
+  owner: Bytes!
+  pool: Bytes!         # CLPool address
+  liquidity: BigInt!   # current liquidity of position
+  token0: Bytes!
+  token1: Bytes!
+  deposited0: BigInt!  # net deposited (proportional withdrawals)
+  deposited1: BigInt!
+}
