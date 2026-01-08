@@ -1,89 +1,169 @@
-import { BigInt, Bytes, Address } from "@graphprotocol/graph-ts"
-import { Mint, Burn, Pool as PoolContract } from "../generated/V2Pool1/Pool"
-import { LPTokenAttribution, Pool } from "../generated/schema"
+import { BigInt, Bytes, Address, ethereum } from "@graphprotocol/graph-ts"
+import { Mint, Burn, Transfer, Pool as PoolContract } from "../generated/V2Pool1/Pool"
+import { LPTokenAttribution, Pool, V2TxRecipient } from "../generated/schema"
+
+const ZERO = Address.fromString("0x0000000000000000000000000000000000000000")
+
+function emptyBytes(): Bytes {
+  return Bytes.fromHexString("0x") as Bytes
+}
 
 function getOrCreatePool(poolAddress: Address): Pool {
   let id = poolAddress.toHexString()
   let pool = Pool.load(id)
-  
+
   if (pool == null) {
     pool = new Pool(id)
-    
-    // Fetch token0 and token1 from the contract
+
     let contract = PoolContract.bind(poolAddress)
     let token0Result = contract.try_token0()
     let token1Result = contract.try_token1()
-    
-    if (!token0Result.reverted) {
-      pool.token0 = token0Result.value
-    } else {
-      pool.token0 = Bytes.empty()
-    }
-    
-    if (!token1Result.reverted) {
-      pool.token1 = token1Result.value
-    } else {
-      pool.token1 = Bytes.empty()
-    }
-    
+
+    pool.token0 = token0Result.reverted ? emptyBytes() : token0Result.value
+    pool.token1 = token1Result.reverted ? emptyBytes() : token1Result.value
+
     pool.isV3 = false
     pool.save()
   }
-  
+
   return pool
 }
 
 function getOrCreateAttribution(pool: Bytes, user: Bytes, token: Bytes): LPTokenAttribution {
   let id = pool.toHexString() + "-" + user.toHexString() + "-" + token.toHexString()
-  let attribution = LPTokenAttribution.load(id)
-  
-  if (attribution == null) {
-    attribution = new LPTokenAttribution(id)
-    attribution.pool = pool
-    attribution.user = user
-    attribution.token = token
-    attribution.depositedBalance = BigInt.zero()
+  let a = LPTokenAttribution.load(id)
+
+  if (a == null) {
+    a = new LPTokenAttribution(id)
+    a.pool = pool
+    a.user = user
+    a.token = token
+    a.depositedBalance = BigInt.zero()
   }
-  
-  return attribution
+  return a
+}
+
+function scratchId(event: ethereum.Event): string {
+  return event.transaction.hash.toHexString() + "-" + event.address.toHexString()
+}
+
+function getScratch(event: ethereum.Event): V2TxRecipient {
+  let id = scratchId(event)
+  let s = V2TxRecipient.load(id)
+
+  if (s == null) {
+    s = new V2TxRecipient(id)
+    s.pool = event.address
+    s.mint0 = BigInt.zero()
+    s.mint1 = BigInt.zero()
+    s.mintReady = false
+    s.mintedTo = ZERO as Bytes
+    s.mintedToReady = false
+    s.lastLpFrom = ZERO as Bytes
+    s.save()
+  }
+
+  return s
+}
+
+function tryFinalizeMint(poolAddr: Address, pool: Pool, s: V2TxRecipient): void {
+  if (!s.mintReady || !s.mintedToReady) return
+
+  // mintedTo must not be ZERO
+  if (Address.fromBytes(s.mintedTo) == ZERO) return
+
+  let user = s.mintedTo
+  let amount0 = s.mint0
+  let amount1 = s.mint1
+
+  if (pool.token0.length > 0 && amount0.gt(BigInt.zero())) {
+    let a0 = getOrCreateAttribution(poolAddr as Bytes, user, pool.token0)
+    a0.depositedBalance = a0.depositedBalance.plus(amount0)
+    a0.save()
+  }
+
+  if (pool.token1.length > 0 && amount1.gt(BigInt.zero())) {
+    let a1 = getOrCreateAttribution(poolAddr as Bytes, user, pool.token1)
+    a1.depositedBalance = a1.depositedBalance.plus(amount1)
+    a1.save()
+  }
+
+  // clear mint scratch safely
+  s.mint0 = BigInt.zero()
+  s.mint1 = BigInt.zero()
+  s.mintReady = false
+  s.mintedTo = ZERO as Bytes
+  s.mintedToReady = false
+  s.save()
+}
+
+export function handleV2Transfer(event: Transfer): void {
+  let poolAddr = event.address
+  let pool = getOrCreatePool(poolAddr)
+  let s = getScratch(event)
+
+  let from = event.params.from
+  let to = event.params.to
+
+  // LP mint: Transfer(0x0, recipient, liquidity)
+  if (from == ZERO) {
+    s.mintedTo = to as Bytes
+    s.mintedToReady = true
+    s.save()
+    tryFinalizeMint(poolAddr, pool, s)
+    return
+  }
+
+  // LP moved into pair before burn: Transfer(user, pair, liquidity)
+  if (to == poolAddr) {
+    s.lastLpFrom = from as Bytes
+    s.save()
+    return
+  }
+
+  // ignore secondary transfers
 }
 
 export function handleV2Mint(event: Mint): void {
-  let poolAddress = event.address
-  let pool = getOrCreatePool(poolAddress)
-  
-  // sender is the LP depositor
-  let depositor = event.params.sender
-  let amount0 = event.params.amount0
-  let amount1 = event.params.amount1
-  
-  // Update attribution for token0
-  let attribution0 = getOrCreateAttribution(poolAddress, depositor, pool.token0)
-  attribution0.depositedBalance = attribution0.depositedBalance.plus(amount0)
-  attribution0.save()
-  
-  // Update attribution for token1
-  let attribution1 = getOrCreateAttribution(poolAddress, depositor, pool.token1)
-  attribution1.depositedBalance = attribution1.depositedBalance.plus(amount1)
-  attribution1.save()
+  let poolAddr = event.address
+  let pool = getOrCreatePool(poolAddr)
+  let s = getScratch(event)
+
+  s.mint0 = event.params.amount0
+  s.mint1 = event.params.amount1
+  s.mintReady = true
+  s.save()
+
+  tryFinalizeMint(poolAddr, pool, s)
 }
 
 export function handleV2Burn(event: Burn): void {
-  let poolAddress = event.address
-  let pool = getOrCreatePool(poolAddress)
-  
-  // 'to' is the recipient of the withdrawn tokens
-  let withdrawer = event.params.to
+  let poolAddr = event.address
+  let pool = getOrCreatePool(poolAddr)
+  let s = getScratch(event)
+
   let amount0 = event.params.amount0
   let amount1 = event.params.amount1
-  
-  // Update attribution for token0 (subtract)
-  let attribution0 = getOrCreateAttribution(poolAddress, withdrawer, pool.token0)
-  attribution0.depositedBalance = attribution0.depositedBalance.minus(amount0)
-  attribution0.save()
-  
-  // Update attribution for token1 (subtract)
-  let attribution1 = getOrCreateAttribution(poolAddress, withdrawer, pool.token1)
-  attribution1.depositedBalance = attribution1.depositedBalance.minus(amount1)
-  attribution1.save()
+
+  // prefer LP provider captured from Transfer(user -> pair)
+  let userBytes = s.lastLpFrom
+  if (Address.fromBytes(userBytes) == ZERO) {
+    userBytes = event.transaction.from as Bytes
+  }
+
+  if (pool.token0.length > 0 && amount0.gt(BigInt.zero())) {
+    let a0 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token0)
+    a0.depositedBalance = a0.depositedBalance.minus(amount0)
+    a0.save()
+  }
+
+  if (pool.token1.length > 0 && amount1.gt(BigInt.zero())) {
+    let a1 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token1)
+    a1.depositedBalance = a1.depositedBalance.minus(amount1)
+    a1.save()
+  }
+
+  // clear burn helper
+  s.lastLpFrom = ZERO as Bytes
+  s.save()
 }

@@ -22,11 +22,15 @@ dataSources:
       abis:
         - name: CLPool
           file: ./abis/CLPool.json
+        - name: NonfungiblePositionManager
+          file: ./abis/NonfungiblePositionManager.json
       eventHandlers:
         - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
           handler: handleV3Mint
+          receipt: true
         - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
           handler: handleV3Burn
+          receipt: true
       file: ./src/v3Pool.ts
   - kind: ethereum
     name: V3Pool2
@@ -45,11 +49,15 @@ dataSources:
       abis:
         - name: CLPool
           file: ./abis/CLPool.json
+        - name: NonfungiblePositionManager
+          file: ./abis/NonfungiblePositionManager.json
       eventHandlers:
         - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
           handler: handleV3Mint
+          receipt: true
         - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
           handler: handleV3Burn
+          receipt: true
       file: ./src/v3Pool.ts
   - kind: ethereum
     name: V3Pool3
@@ -68,13 +76,18 @@ dataSources:
       abis:
         - name: CLPool
           file: ./abis/CLPool.json
+        - name: NonfungiblePositionManager
+          file: ./abis/NonfungiblePositionManager.json
       eventHandlers:
         - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
           handler: handleV3Mint
+          receipt: true
         - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
           handler: handleV3Burn
+          receipt: true
       file: ./src/v3Pool.ts
   # ============ V2 POOLS (Pool) ============
+  # Uses Transfer events to identify actual LP recipient (supports Safe wallets)
   - kind: ethereum
     name: V2Pool1
     network: base
@@ -89,10 +102,13 @@ dataSources:
       entities:
         - LPTokenAttribution
         - Pool
+        - V2TxRecipient
       abis:
         - name: Pool
           file: ./abis/Pool.json
       eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleV2Transfer
         - event: Mint(indexed address,uint256,uint256)
           handler: handleV2Mint
         - event: Burn(indexed address,indexed address,uint256,uint256)
@@ -112,10 +128,13 @@ dataSources:
       entities:
         - LPTokenAttribution
         - Pool
+        - V2TxRecipient
       abis:
         - name: Pool
           file: ./abis/Pool.json
       eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleV2Transfer
         - event: Mint(indexed address,uint256,uint256)
           handler: handleV2Mint
         - event: Burn(indexed address,indexed address,uint256,uint256)

@@ -14,3 +14,17 @@ type Pool @entity {
   token1: Bytes!
   isV3: Boolean!               # true for V3 (CLPool), false for V2
 }
+
+type V2TxRecipient @entity {
+  id: ID!
+  pool: Bytes!
+
+  mint0: BigInt!
+  mint1: BigInt!
+  mintReady: Boolean!
+
+  mintedTo: Bytes!
+  mintedToReady: Boolean!
+
+  lastLpFrom: Bytes!   # default to ZERO_ADDRESS
+}
