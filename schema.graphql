@@ -7,6 +7,14 @@ type LPTokenAttribution @entity {
   depositedBalance: BigInt!    # Net deposited (deposits - withdrawals)
 }
 
+# Tracks LP/liquidity balance per user per pool for proportional withdrawal calculation
+type UserPoolLP @entity {
+  id: ID!                      # "{pool}-{user}"
+  pool: Bytes!
+  user: Bytes!
+  lpBalance: BigInt!           # Total LP tokens or liquidity units held
+}
+
 # Pool entity to cache token0/token1 for each pool
 type Pool @entity {
   id: ID!                      # pool address
@@ -21,10 +29,12 @@ type V2TxRecipient @entity {
 
   mint0: BigInt!
   mint1: BigInt!
+  mintLpAmount: BigInt!        # LP tokens minted
   mintReady: Boolean!
 
   mintedTo: Bytes!
   mintedToReady: Boolean!
 
-  lastLpFrom: Bytes!   # default to ZERO_ADDRESS
+  lastLpFrom: Bytes!           # default to ZERO_ADDRESS
+  lastLpAmount: BigInt!        # LP tokens being burned
 }

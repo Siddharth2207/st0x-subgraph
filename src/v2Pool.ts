@@ -1,6 +1,6 @@
 import { BigInt, Bytes, Address, ethereum } from "@graphprotocol/graph-ts"
 import { Mint, Burn, Transfer, Pool as PoolContract } from "../generated/V2Pool1/Pool"
-import { LPTokenAttribution, Pool, V2TxRecipient } from "../generated/schema"
+import { LPTokenAttribution, Pool, V2TxRecipient, UserPoolLP } from "../generated/schema"
 
 const ZERO = Address.fromString("0x0000000000000000000000000000000000000000")
 
@@ -43,6 +43,19 @@ function getOrCreateAttribution(pool: Bytes, user: Bytes, token: Bytes): LPToken
   return a
 }
 
+function getOrCreateUserPoolLP(pool: Bytes, user: Bytes): UserPoolLP {
+  let id = pool.toHexString() + "-" + user.toHexString()
+  let lp = UserPoolLP.load(id)
+
+  if (lp == null) {
+    lp = new UserPoolLP(id)
+    lp.pool = pool
+    lp.user = user
+    lp.lpBalance = BigInt.zero()
+  }
+  return lp
+}
+
 function scratchId(event: ethereum.Event): string {
   return event.transaction.hash.toHexString() + "-" + event.address.toHexString()
 }
@@ -56,10 +69,12 @@ function getScratch(event: ethereum.Event): V2TxRecipient {
     s.pool = event.address
     s.mint0 = BigInt.zero()
     s.mint1 = BigInt.zero()
+    s.mintLpAmount = BigInt.zero()
     s.mintReady = false
     s.mintedTo = ZERO as Bytes
     s.mintedToReady = false
     s.lastLpFrom = ZERO as Bytes
+    s.lastLpAmount = BigInt.zero()
     s.save()
   }
 
@@ -75,6 +90,14 @@ function tryFinalizeMint(poolAddr: Address, pool: Pool, s: V2TxRecipient): void 
   let user = s.mintedTo
   let amount0 = s.mint0
   let amount1 = s.mint1
+  let lpAmount = s.mintLpAmount
+
+  // Track LP balance for proportional withdrawal
+  if (lpAmount.gt(BigInt.zero())) {
+    let userLp = getOrCreateUserPoolLP(poolAddr as Bytes, user)
+    userLp.lpBalance = userLp.lpBalance.plus(lpAmount)
+    userLp.save()
+  }
 
   if (pool.token0.length > 0 && amount0.gt(BigInt.zero())) {
     let a0 = getOrCreateAttribution(poolAddr as Bytes, user, pool.token0)
@@ -91,6 +114,7 @@ function tryFinalizeMint(poolAddr: Address, pool: Pool, s: V2TxRecipient): void 
   // clear mint scratch safely
   s.mint0 = BigInt.zero()
   s.mint1 = BigInt.zero()
+  s.mintLpAmount = BigInt.zero()
   s.mintReady = false
   s.mintedTo = ZERO as Bytes
   s.mintedToReady = false
@@ -104,10 +128,12 @@ export function handleV2Transfer(event: Transfer): void {
 
   let from = event.params.from
   let to = event.params.to
+  let lpAmount = event.params.value
 
   // LP mint: Transfer(0x0, recipient, liquidity)
   if (from == ZERO) {
     s.mintedTo = to as Bytes
+    s.mintLpAmount = lpAmount
     s.mintedToReady = true
     s.save()
     tryFinalizeMint(poolAddr, pool, s)
@@ -117,6 +143,7 @@ export function handleV2Transfer(event: Transfer): void {
   // LP moved into pair before burn: Transfer(user, pair, liquidity)
   if (to == poolAddr) {
     s.lastLpFrom = from as Bytes
+    s.lastLpAmount = lpAmount
     s.save()
     return
   }
@@ -142,28 +169,63 @@ export function handleV2Burn(event: Burn): void {
   let pool = getOrCreatePool(poolAddr)
   let s = getScratch(event)
 
-  let amount0 = event.params.amount0
-  let amount1 = event.params.amount1
-
   // prefer LP provider captured from Transfer(user -> pair)
   let userBytes = s.lastLpFrom
   if (Address.fromBytes(userBytes) == ZERO) {
     userBytes = event.transaction.from as Bytes
   }
 
-  if (pool.token0.length > 0 && amount0.gt(BigInt.zero())) {
-    let a0 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token0)
-    a0.depositedBalance = a0.depositedBalance.minus(amount0)
-    a0.save()
-  }
-
-  if (pool.token1.length > 0 && amount1.gt(BigInt.zero())) {
-    let a1 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token1)
-    a1.depositedBalance = a1.depositedBalance.minus(amount1)
-    a1.save()
+  let lpRemoved = s.lastLpAmount
+  
+  // Get user's LP balance for proportional calculation
+  let userLp = getOrCreateUserPoolLP(poolAddr as Bytes, userBytes)
+  let totalLp = userLp.lpBalance
+  
+  // Calculate proportion: lpRemoved / totalLp
+  // Use high precision (18 decimals) for ratio calculation
+  let PRECISION = BigInt.fromI32(10).pow(18)
+  
+  if (totalLp.gt(BigInt.zero()) && lpRemoved.gt(BigInt.zero())) {
+    // ratio = lpRemoved * PRECISION / totalLp
+    let ratio = lpRemoved.times(PRECISION).div(totalLp)
+    
+    // Deduct LP balance
+    userLp.lpBalance = userLp.lpBalance.minus(lpRemoved)
+    if (userLp.lpBalance.lt(BigInt.zero())) {
+      userLp.lpBalance = BigInt.zero()
+    }
+    userLp.save()
+    
+    // Deduct proportionally from deposited balances
+    if (pool.token0.length > 0) {
+      let a0 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token0)
+      if (a0.depositedBalance.gt(BigInt.zero())) {
+        // deduction = depositedBalance * ratio / PRECISION
+        let deduction = a0.depositedBalance.times(ratio).div(PRECISION)
+        a0.depositedBalance = a0.depositedBalance.minus(deduction)
+        if (a0.depositedBalance.lt(BigInt.zero())) {
+          a0.depositedBalance = BigInt.zero()
+        }
+        a0.save()
+      }
+    }
+    
+    if (pool.token1.length > 0) {
+      let a1 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token1)
+      if (a1.depositedBalance.gt(BigInt.zero())) {
+        // deduction = depositedBalance * ratio / PRECISION
+        let deduction = a1.depositedBalance.times(ratio).div(PRECISION)
+        a1.depositedBalance = a1.depositedBalance.minus(deduction)
+        if (a1.depositedBalance.lt(BigInt.zero())) {
+          a1.depositedBalance = BigInt.zero()
+        }
+        a1.save()
+      }
+    }
   }
 
   // clear burn helper
   s.lastLpFrom = ZERO as Bytes
+  s.lastLpAmount = BigInt.zero()
   s.save()
 }
