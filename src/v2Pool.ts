@@ -8,6 +8,66 @@ function emptyBytes(): Bytes {
   return Bytes.fromHexString("0x") as Bytes
 }
 
+function moveDepositBasisOnLpTransfer(
+  poolAddr: Address,
+  pool: Pool,
+  from: Address,
+  to: Address,
+  lpMoved: BigInt
+): void {
+  if (lpMoved.le(BigInt.zero())) return
+
+  // Update LP balances
+  let fromLp = getOrCreateUserPoolLP(poolAddr as Bytes, from as Bytes)
+  let toLp = getOrCreateUserPoolLP(poolAddr as Bytes, to as Bytes)
+
+  let fromTotal = fromLp.lpBalance
+  if (fromTotal.le(BigInt.zero())) return // nothing to move
+
+  // ratio = lpMoved / fromTotal (18-dec fixed point)
+  let PRECISION = BigInt.fromI32(10).pow(18)
+  let ratio = lpMoved.times(PRECISION).div(fromTotal)
+
+  // Move token0 basis
+  if (pool.token0.length > 0) {
+    let fromA0 = getOrCreateAttribution(poolAddr as Bytes, from as Bytes, pool.token0)
+    let move0 = fromA0.depositedBalance.times(ratio).div(PRECISION)
+
+    if (move0.gt(BigInt.zero())) {
+      fromA0.depositedBalance = fromA0.depositedBalance.minus(move0)
+      fromA0.save()
+
+      let toA0 = getOrCreateAttribution(poolAddr as Bytes, to as Bytes, pool.token0)
+      toA0.depositedBalance = toA0.depositedBalance.plus(move0)
+      toA0.save()
+    }
+  }
+
+  // Move token1 basis
+  if (pool.token1.length > 0) {
+    let fromA1 = getOrCreateAttribution(poolAddr as Bytes, from as Bytes, pool.token1)
+    let move1 = fromA1.depositedBalance.times(ratio).div(PRECISION)
+
+    if (move1.gt(BigInt.zero())) {
+      fromA1.depositedBalance = fromA1.depositedBalance.minus(move1)
+      fromA1.save()
+
+      let toA1 = getOrCreateAttribution(poolAddr as Bytes, to as Bytes, pool.token1)
+      toA1.depositedBalance = toA1.depositedBalance.plus(move1)
+      toA1.save()
+    }
+  }
+
+  // Finally move LP balances
+  fromLp.lpBalance = fromLp.lpBalance.minus(lpMoved)
+  if (fromLp.lpBalance.lt(BigInt.zero())) fromLp.lpBalance = BigInt.zero()
+  fromLp.save()
+
+  toLp.lpBalance = toLp.lpBalance.plus(lpMoved)
+  toLp.save()
+}
+
+
 function getOrCreatePool(poolAddress: Address): Pool {
   let id = poolAddress.toHexString()
   let pool = Pool.load(id)
@@ -85,7 +145,7 @@ function tryFinalizeMint(poolAddr: Address, pool: Pool, s: V2TxRecipient): void 
   if (!s.mintReady || !s.mintedToReady) return
 
   // mintedTo must not be ZERO
-  if (Address.fromBytes(s.mintedTo) == ZERO) return
+  if (Address.fromBytes(s.mintedTo).equals(ZERO)) return
 
   let user = s.mintedTo
   let amount0 = s.mint0
@@ -130,8 +190,10 @@ export function handleV2Transfer(event: Transfer): void {
   let to = event.params.to
   let lpAmount = event.params.value
 
-  // LP mint: Transfer(0x0, recipient, liquidity)
-  if (from == ZERO) {
+  // -----------------------------
+  // 1) LP MINT: Transfer(0x0 -> user)
+  // -----------------------------
+  if (from.equals(ZERO)) {
     s.mintedTo = to as Bytes
     s.mintLpAmount = lpAmount
     s.mintedToReady = true
@@ -140,16 +202,37 @@ export function handleV2Transfer(event: Transfer): void {
     return
   }
 
-  // LP moved into pair before burn: Transfer(user, pair, liquidity)
-  if (to == poolAddr) {
+  // -----------------------------
+  // 2) User sends LP to pair (burn intent)
+  // -----------------------------
+  if (to.equals(poolAddr)) {
     s.lastLpFrom = from as Bytes
     s.lastLpAmount = lpAmount
     s.save()
     return
   }
 
-  // ignore secondary transfers
+  // -----------------------------
+  // 3) Actual LP burn: Transfer(pair -> 0x0)
+  // -----------------------------
+  if (from.equals(poolAddr) && to.equals(ZERO)) {
+    // definitive LP burned amount
+    s.lastLpAmount = lpAmount
+    s.save()
+    return
+  }
+
+  // -----------------------------
+  // 4) LP transfer between users
+  // -----------------------------
+  if (!from.equals(ZERO) && !to.equals(ZERO) && !to.equals(poolAddr)) {
+    moveDepositBasisOnLpTransfer(poolAddr, pool, from, to, lpAmount)
+    return
+  }
+
+  // ignore everything else
 }
+
 
 export function handleV2Mint(event: Mint): void {
   let poolAddr = event.address
@@ -169,63 +252,63 @@ export function handleV2Burn(event: Burn): void {
   let pool = getOrCreatePool(poolAddr)
   let s = getScratch(event)
 
-  // prefer LP provider captured from Transfer(user -> pair)
+  // Prefer LP sender captured from Transfer(user -> pair)
   let userBytes = s.lastLpFrom
-  if (Address.fromBytes(userBytes) == ZERO) {
+  if (Address.fromBytes(userBytes).equals(ZERO)) {
     userBytes = event.transaction.from as Bytes
   }
 
   let lpRemoved = s.lastLpAmount
-  
-  // Get user's LP balance for proportional calculation
+  if (lpRemoved.le(BigInt.zero())) {
+    // nothing to do
+    return
+  }
+
   let userLp = getOrCreateUserPoolLP(poolAddr as Bytes, userBytes)
   let totalLp = userLp.lpBalance
-  
-  // Calculate proportion: lpRemoved / totalLp
-  // Use high precision (18 decimals) for ratio calculation
+  if (totalLp.le(BigInt.zero())) {
+    return
+  }
+
   let PRECISION = BigInt.fromI32(10).pow(18)
-  
-  if (totalLp.gt(BigInt.zero()) && lpRemoved.gt(BigInt.zero())) {
-    // ratio = lpRemoved * PRECISION / totalLp
-    let ratio = lpRemoved.times(PRECISION).div(totalLp)
-    
-    // Deduct LP balance
-    userLp.lpBalance = userLp.lpBalance.minus(lpRemoved)
-    if (userLp.lpBalance.lt(BigInt.zero())) {
-      userLp.lpBalance = BigInt.zero()
-    }
-    userLp.save()
-    
-    // Deduct proportionally from deposited balances
-    if (pool.token0.length > 0) {
-      let a0 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token0)
-      if (a0.depositedBalance.gt(BigInt.zero())) {
-        // deduction = depositedBalance * ratio / PRECISION
-        let deduction = a0.depositedBalance.times(ratio).div(PRECISION)
-        a0.depositedBalance = a0.depositedBalance.minus(deduction)
-        if (a0.depositedBalance.lt(BigInt.zero())) {
-          a0.depositedBalance = BigInt.zero()
-        }
-        a0.save()
+  let ratio = lpRemoved.times(PRECISION).div(totalLp)
+
+  // Update LP balance
+  userLp.lpBalance = userLp.lpBalance.minus(lpRemoved)
+  if (userLp.lpBalance.lt(BigInt.zero())) {
+    userLp.lpBalance = BigInt.zero()
+  }
+  userLp.save()
+
+  // Proportional deduction for token0
+  if (pool.token0.length > 0) {
+    let a0 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token0)
+    if (a0.depositedBalance.gt(BigInt.zero())) {
+      let deduction0 = a0.depositedBalance.times(ratio).div(PRECISION)
+      a0.depositedBalance = a0.depositedBalance.minus(deduction0)
+      if (a0.depositedBalance.lt(BigInt.zero())) {
+        a0.depositedBalance = BigInt.zero()
       }
-    }
-    
-    if (pool.token1.length > 0) {
-      let a1 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token1)
-      if (a1.depositedBalance.gt(BigInt.zero())) {
-        // deduction = depositedBalance * ratio / PRECISION
-        let deduction = a1.depositedBalance.times(ratio).div(PRECISION)
-        a1.depositedBalance = a1.depositedBalance.minus(deduction)
-        if (a1.depositedBalance.lt(BigInt.zero())) {
-          a1.depositedBalance = BigInt.zero()
-        }
-        a1.save()
-      }
+      a0.save()
     }
   }
 
-  // clear burn helper
+  // Proportional deduction for token1
+  if (pool.token1.length > 0) {
+    let a1 = getOrCreateAttribution(poolAddr as Bytes, userBytes, pool.token1)
+    if (a1.depositedBalance.gt(BigInt.zero())) {
+      let deduction1 = a1.depositedBalance.times(ratio).div(PRECISION)
+      a1.depositedBalance = a1.depositedBalance.minus(deduction1)
+      if (a1.depositedBalance.lt(BigInt.zero())) {
+        a1.depositedBalance = BigInt.zero()
+      }
+      a1.save()
+    }
+  }
+
+  // Clear scratch
   s.lastLpFrom = ZERO as Bytes
   s.lastLpAmount = BigInt.zero()
   s.save()
 }
+
