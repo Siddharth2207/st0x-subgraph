@@ -1,16 +1,13 @@
 import { BigInt, Bytes, Address, ethereum } from "@graphprotocol/graph-ts"
 import { Mint, Burn, CLPool } from "../generated/V3Pool1/CLPool"
-import { NonfungiblePositionManager } from "../generated/V3Pool1/NonfungiblePositionManager"
 import { Pool, LPTokenAttribution, UserPoolLP } from "../generated/schema"
 
 // NonfungiblePositionManager address
 const NFT_POSITION_MANAGER = Address.fromString("0x827922686190790b37229fd06084350E74485b72")
+const ZERO_ADDRESS = Address.fromString("0x0000000000000000000000000000000000000000")
 
-// Event signature hashes
-// IncreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)
-const INCREASE_LIQUIDITY_TOPIC = Bytes.fromHexString("0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f")
-// DecreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)
-const DECREASE_LIQUIDITY_TOPIC = Bytes.fromHexString("0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4")
+// ERC721 Transfer event: Transfer(indexed address from, indexed address to, indexed uint256 tokenId)
+const ERC721_TRANSFER_TOPIC = Bytes.fromHexString("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
 
 function getOrCreatePool(poolAddress: Address): Pool {
   let id = poolAddress.toHexString()
@@ -70,11 +67,13 @@ function getOrCreateUserPoolLP(pool: Bytes, user: Bytes): UserPoolLP {
   return lp
 }
 
-// Find tokenId from IncreaseLiquidity/DecreaseLiquidity event in tx receipt
-function findTokenIdFromReceipt(
-  receipt: ethereum.TransactionReceipt, 
-  eventTopic: Bytes
-): BigInt | null {
+// Find owner from ERC721 Transfer event in receipt
+// For mint: looks for Transfer(0x0 -> user), returns `to`
+// For burn: looks for Transfer(user -> 0x0), returns `from`
+function findOwnerFromNFTTransfer(
+  receipt: ethereum.TransactionReceipt,
+  isMint: boolean
+): Address | null {
   let logs = receipt.logs
   
   for (let i = 0; i < logs.length; i++) {
@@ -85,48 +84,58 @@ function findTokenIdFromReceipt(
       continue
     }
     
-    // Check if topics exist and first topic matches our event
-    if (log.topics.length < 2) {
+    // Check if topics exist and first topic is ERC721 Transfer
+    if (log.topics.length < 4) {
       continue
     }
     
-    if (log.topics[0].notEqual(eventTopic)) {
+    if (log.topics[0].notEqual(ERC721_TRANSFER_TOPIC)) {
       continue
     }
     
-    // tokenId is in topics[1] (indexed parameter)
-    let tokenId = BigInt.fromByteArray(Bytes.fromUint8Array(log.topics[1].reverse()))
-    return tokenId
+    // ERC721 Transfer: topics[1] = from, topics[2] = to, topics[3] = tokenId
+    let from = Address.fromBytes(Bytes.fromUint8Array(log.topics[1].subarray(12)))
+    let to = Address.fromBytes(Bytes.fromUint8Array(log.topics[2].subarray(12)))
+    
+    if (isMint) {
+      // For mint: look for Transfer(0x0 -> user) - NFT being minted to user
+      if (from.equals(ZERO_ADDRESS) && to.notEqual(ZERO_ADDRESS)) {
+        return to
+      }
+    } else {
+      // For burn: look for Transfer(user -> 0x0) - NFT being burned
+      // Or any transfer where from != 0x0 (user is the current holder)
+      if (from.notEqual(ZERO_ADDRESS)) {
+        return from
+      }
+    }
   }
   
   return null
 }
 
-// Get owner of NFT position by tokenId via contract call
-function getPositionOwner(tokenId: BigInt): Address | null {
-  let nftManager = NonfungiblePositionManager.bind(NFT_POSITION_MANAGER)
-  let ownerResult = nftManager.try_ownerOf(tokenId)
-  
-  if (ownerResult.reverted) {
-    return null
-  }
-  
-  return ownerResult.value
-}
-
-// Resolve the actual owner (LP holder) - handles Safe wallets and direct transactions
-function resolveOwner(event: ethereum.Event, eventTopic: Bytes): Address {
+// Resolve the actual owner (LP holder) from ERC721 Transfer events
+function resolveOwnerForMint(event: ethereum.Event): Address {
   let receipt = event.receipt
   if (receipt !== null) {
-    let tokenId = findTokenIdFromReceipt(receipt, eventTopic)
-    if (tokenId !== null) {
-      let realOwner = getPositionOwner(tokenId)
-      if (realOwner !== null) {
-        return realOwner
-      }
+    let owner = findOwnerFromNFTTransfer(receipt, true)
+    if (owner !== null) {
+      return owner
     }
   }
-  // Fallback to transaction.from if we can't find the owner from receipt
+  // Fallback to transaction.from
+  return event.transaction.from
+}
+
+function resolveOwnerForBurn(event: ethereum.Event): Address {
+  let receipt = event.receipt
+  if (receipt !== null) {
+    let owner = findOwnerFromNFTTransfer(receipt, false)
+    if (owner !== null) {
+      return owner
+    }
+  }
+  // Fallback to transaction.from
   return event.transaction.from
 }
 
@@ -136,9 +145,9 @@ export function handleV3Mint(event: Mint): void {
   let owner: Address = event.params.owner
   
   // If owner is NFT position manager, resolve the actual LP holder
-  // by looking up ownerOf(tokenId) from the IncreaseLiquidity event
+  // by looking for ERC721 Transfer event (NFT minted to user)
   if (owner.equals(NFT_POSITION_MANAGER)) {
-    owner = resolveOwner(event, INCREASE_LIQUIDITY_TOPIC)
+    owner = resolveOwnerForMint(event)
   }
   
   let liquidity = event.params.amount
@@ -171,9 +180,9 @@ export function handleV3Burn(event: Burn): void {
   let owner: Address = event.params.owner
   
   // If owner is NFT position manager, resolve the actual LP holder
-  // by looking up ownerOf(tokenId) from the DecreaseLiquidity event
+  // by looking for ERC721 Transfer event (user's NFT)
   if (owner.equals(NFT_POSITION_MANAGER)) {
-    owner = resolveOwner(event, DECREASE_LIQUIDITY_TOPIC)
+    owner = resolveOwnerForBurn(event)
   }
   
   let liquidityRemoved = event.params.amount
