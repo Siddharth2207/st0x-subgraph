@@ -4,89 +4,116 @@ indexerHints:
 schema:
   file: ./schema.graphql
 dataSources:
-  # # ============ V3 POOLS (CLPool) ============
-  # - kind: ethereum
-  #   name: V3Pool1
-  #   network: base
-  #   source:
-  #     abi: CLPool
-  #     address: "0x40a8e39AbA67debEdab94F76D21114AB39909c5a"
-  #     startBlock: 37553000
-  #   mapping:
-  #     kind: ethereum/events
-  #     apiVersion: 0.0.7
-  #     language: wasm/assemblyscript
-  #     entities:
-  #       - LPTokenAttribution
-  #       - Pool
-  #     abis:
-  #       - name: CLPool
-  #         file: ./abis/CLPool.json
-  #       - name: NonfungiblePositionManager
-  #         file: ./abis/NonfungiblePositionManager.json
-  #     eventHandlers:
-  #       - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
-  #         handler: handleV3Mint
-  #         receipt: true
-  #       - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
-  #         handler: handleV3Burn
-  #         receipt: true
-  #     file: ./src/v3Pool.ts
-  # - kind: ethereum
-  #   name: V3Pool2
-  #   network: base
-  #   source:
-  #     abi: CLPool
-  #     address: "0xff948480D67f83F6F0D2b87217ffC662f19F4B47"
-  #     startBlock: 37553000
-  #   mapping:
-  #     kind: ethereum/events
-  #     apiVersion: 0.0.7
-  #     language: wasm/assemblyscript
-  #     entities:
-  #       - LPTokenAttribution
-  #       - Pool
-  #     abis:
-  #       - name: CLPool
-  #         file: ./abis/CLPool.json
-  #       - name: NonfungiblePositionManager
-  #         file: ./abis/NonfungiblePositionManager.json
-  #     eventHandlers:
-  #       - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
-  #         handler: handleV3Mint
-  #         receipt: true
-  #       - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
-  #         handler: handleV3Burn
-  #         receipt: true
-  #     file: ./src/v3Pool.ts
-  # - kind: ethereum
-  #   name: V3Pool3
-  #   network: base
-  #   source:
-  #     abi: CLPool
-  #     address: "0x419aC22a42e866DD92F36D7AcA3f126D2EDd2567"
-  #     startBlock: 37553000
-  #   mapping:
-  #     kind: ethereum/events
-  #     apiVersion: 0.0.7
-  #     language: wasm/assemblyscript
-  #     entities:
-  #       - LPTokenAttribution
-  #       - Pool
-  #     abis:
-  #       - name: CLPool
-  #         file: ./abis/CLPool.json
-  #       - name: NonfungiblePositionManager
-  #         file: ./abis/NonfungiblePositionManager.json
-  #     eventHandlers:
-  #       - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
-  #         handler: handleV3Mint
-  #         receipt: true
-  #       - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
-  #         handler: handleV3Burn
-  #         receipt: true
-  #     file: ./src/v3Pool.ts
-  # ============ V2 POOLS (Pool) ============
+  - kind: ethereum
+    name: V3PositionManager
+    network: base
+    source:
+      abi: NonfungiblePositionManager
+      address: "0x827922686190790b37229fd06084350E74485b72"
+      startBlock: 37553000   # IMPORTANT: keep this same as your pools
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - V3Position
+        - LPTokenAttribution
+        - Pool
+      abis:
+        - name: NonfungiblePositionManager
+          file: ./abis/NonfungiblePositionManager.json
+      eventHandlers:
+        - event: IncreaseLiquidity(indexed uint256,uint128,uint256,uint256)
+          handler: handleIncreaseLiquidity
+        - event: DecreaseLiquidity(indexed uint256,uint128,uint256,uint256)
+          handler: handleDecreaseLiquidity
+        - event: Transfer(indexed address,indexed address,indexed uint256)
+          handler: handlePositionTransfer
+      file: ./src/v3Pool.ts
+
+  # ============ V3 POOLS (CLPool) ============
+  - kind: ethereum
+    name: V3Pool1
+    network: base
+    source:
+      abi: CLPool
+      address: "0x40a8e39AbA67debEdab94F76D21114AB39909c5a"
+      startBlock: 37553000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - LPTokenAttribution
+        - Pool
+      abis:
+        - name: CLPool
+          file: ./abis/CLPool.json
+        - name: NonfungiblePositionManager
+          file: ./abis/NonfungiblePositionManager.json
+      eventHandlers:
+        - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
+          handler: handleV3PoolMint
+          receipt: true
+        - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
+          handler: handleV3PoolBurn
+          receipt: true
+      file: ./src/v3PoolBinder.ts
+  - kind: ethereum
+    name: V3Pool2
+    network: base
+    source:
+      abi: CLPool
+      address: "0xff948480D67f83F6F0D2b87217ffC662f19F4B47"
+      startBlock: 37553000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - LPTokenAttribution
+        - Pool
+      abis:
+        - name: CLPool
+          file: ./abis/CLPool.json
+        - name: NonfungiblePositionManager
+          file: ./abis/NonfungiblePositionManager.json
+      eventHandlers:
+        - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
+          handler: handleV3PoolMint
+          receipt: true
+        - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
+          handler: handleV3PoolBurn
+          receipt: true
+      file: ./src/v3PoolBinder.ts
+  - kind: ethereum
+    name: V3Pool3
+    network: base
+    source:
+      abi: CLPool
+      address: "0x419aC22a42e866DD92F36D7AcA3f126D2EDd2567"
+      startBlock: 37553000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - LPTokenAttribution
+        - Pool
+      abis:
+        - name: CLPool
+          file: ./abis/CLPool.json
+        - name: NonfungiblePositionManager
+          file: ./abis/NonfungiblePositionManager.json
+      eventHandlers:
+        - event: Mint(address,indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
+          handler: handleV3PoolMint
+          receipt: true
+        - event: Burn(indexed address,indexed int24,indexed int24,uint128,uint256,uint256)
+          handler: handleV3PoolBurn
+          receipt: true
+      file: ./src/v3PoolBinder.ts
+  # # ============ V2 POOLS (Pool) ============
   # Uses Transfer events to identify actual LP recipient (supports Safe wallets)
   - kind: ethereum
     name: V2Pool1
@@ -114,29 +141,29 @@ dataSources:
         - event: Burn(indexed address,indexed address,uint256,uint256)
           handler: handleV2Burn
       file: ./src/v2Pool.ts
-  # - kind: ethereum
-  #   name: V2Pool2
-  #   network: base
-  #   source:
-  #     abi: Pool
-  #     address: "0xb804FA2e3631465455594538067001E7A0f83D37"
-  #     startBlock: 37553000
-  #   mapping:
-  #     kind: ethereum/events
-  #     apiVersion: 0.0.7
-  #     language: wasm/assemblyscript
-  #     entities:
-  #       - LPTokenAttribution
-  #       - Pool
-  #       - V2TxRecipient
-  #     abis:
-  #       - name: Pool
-  #         file: ./abis/Pool.json
-  #     eventHandlers:
-  #       - event: Transfer(indexed address,indexed address,uint256)
-  #         handler: handleV2Transfer
-  #       - event: Mint(indexed address,uint256,uint256)
-  #         handler: handleV2Mint
-  #       - event: Burn(indexed address,indexed address,uint256,uint256)
-  #         handler: handleV2Burn
-  #     file: ./src/v2Pool.ts
+  - kind: ethereum
+    name: V2Pool2
+    network: base
+    source:
+      abi: Pool
+      address: "0xb804FA2e3631465455594538067001E7A0f83D37"
+      startBlock: 37553000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - LPTokenAttribution
+        - Pool
+        - V2TxRecipient
+      abis:
+        - name: Pool
+          file: ./abis/Pool.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleV2Transfer
+        - event: Mint(indexed address,uint256,uint256)
+          handler: handleV2Mint
+        - event: Burn(indexed address,indexed address,uint256,uint256)
+          handler: handleV2Burn
+      file: ./src/v2Pool.ts

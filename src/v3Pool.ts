@@ -1,236 +1,273 @@
-import { BigInt, Bytes, Address, ethereum } from "@graphprotocol/graph-ts"
-import { Mint, Burn, CLPool } from "../generated/V3Pool1/CLPool"
-import { Pool, LPTokenAttribution, UserPoolLP } from "../generated/schema"
+import {
+  IncreaseLiquidity,
+  DecreaseLiquidity,
+  Transfer,
+  NonfungiblePositionManager,
+} from "../generated/V3PositionManager/NonfungiblePositionManager";
+import { V3Position, LPTokenAttribution } from "../generated/schema";
 
-// NonfungiblePositionManager address
-const NFT_POSITION_MANAGER = Address.fromString("0x827922686190790b37229fd06084350E74485b72")
-const ZERO_ADDRESS = Address.fromString("0x0000000000000000000000000000000000000000")
+import { ethereum, BigInt, Bytes, Address } from "@graphprotocol/graph-ts";
 
-// ERC721 Transfer event: Transfer(indexed address from, indexed address to, indexed uint256 tokenId)
-const ERC721_TRANSFER_TOPIC = Bytes.fromHexString("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+const NFT_POSITION_MANAGER = Address.fromString(
+  "0x827922686190790b37229fd06084350E74485b72"
+);
 
-function getOrCreatePool(poolAddress: Address): Pool {
-  let id = poolAddress.toHexString()
-  let pool = Pool.load(id)
-  
-  if (pool == null) {
-    pool = new Pool(id)
-    
-    // Fetch token0 and token1 from the contract
-    let contract = CLPool.bind(poolAddress)
-    let token0Result = contract.try_token0()
-    let token1Result = contract.try_token1()
-    
-    if (!token0Result.reverted) {
-      pool.token0 = token0Result.value
-    } else {
-      pool.token0 = Bytes.empty()
+// topic0 for IncreaseLiquidity(uint256,uint128,uint256,uint256)
+const INCREASE_LIQUIDITY_TOPIC = Bytes.fromHexString(
+  "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4"
+);
+
+// topic0 for DecreaseLiquidity(uint256,uint128,uint256,uint256)
+const DECREASE_LIQUIDITY_TOPIC = Bytes.fromHexString(
+  "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f"
+);
+
+/**
+ * Extract tokenId from NPM IncreaseLiquidity / DecreaseLiquidity log
+ * in the SAME transaction as the CLPool Mint/Burn.
+ */
+export function findTokenIdFromReceipt(
+  receipt: ethereum.TransactionReceipt
+): BigInt | null {
+  let logs = receipt.logs;
+
+  for (let i = 0; i < logs.length; i++) {
+    let log = logs[i];
+
+    if (!log.address.equals(NFT_POSITION_MANAGER)) continue;
+    if (log.topics.length < 2) continue;
+
+    let topic0 = log.topics[0];
+    if (
+      !topic0.equals(INCREASE_LIQUIDITY_TOPIC) &&
+      !topic0.equals(DECREASE_LIQUIDITY_TOPIC)
+    ) {
+      continue;
     }
-    
-    if (!token1Result.reverted) {
-      pool.token1 = token1Result.value
-    } else {
-      pool.token1 = Bytes.empty()
-    }
-    
-    pool.isV3 = true
-    pool.save()
+
+    // tokenId is indexed and stored in topics[1]
+    return BigInt.fromByteArray(
+      Bytes.fromUint8Array(log.topics[1].reverse())
+    );
   }
-  
-  return pool
+
+  return null;
+}
+
+
+const NPM = Address.fromString("0x827922686190790b37229fd06084350E74485b72");
+const ZERO = Address.fromString("0x0000000000000000000000000000000000000000");
+
+function isAddressBytes(b: Bytes): bool {
+  return b.length == 20;
+}
+
+function clampNonNegative(x: BigInt): BigInt {
+  return x.lt(BigInt.zero()) ? BigInt.zero() : x;
 }
 
 function getOrCreateAttribution(pool: Bytes, user: Bytes, token: Bytes): LPTokenAttribution {
-  let id = pool.toHexString() + "-" + user.toHexString() + "-" + token.toHexString()
-  let a = LPTokenAttribution.load(id)
-  
+  let id = pool.toHexString() + "-" + user.toHexString() + "-" + token.toHexString();
+  let a = LPTokenAttribution.load(id);
+
   if (a == null) {
-    a = new LPTokenAttribution(id)
-    a.pool = pool
-    a.user = user
-    a.token = token
-    a.depositedBalance = BigInt.zero()
+    a = new LPTokenAttribution(id);
+    a.pool = pool;
+    a.user = user;
+    a.token = token;
+    a.depositedBalance = BigInt.zero();
   }
-  return a
+  return a;
 }
 
-function getOrCreateUserPoolLP(pool: Bytes, user: Bytes): UserPoolLP {
-  let id = pool.toHexString() + "-" + user.toHexString()
-  let lp = UserPoolLP.load(id)
+/**
+ * Loads or initializes a V3Position by tokenId.
+ * IMPORTANT: we only call positions(tokenId) when we first see the tokenId.
+ */
+function getOrInitPosition(tokenId: BigInt): V3Position | null {
+  let id = tokenId.toString();
+  let pos = V3Position.load(id);
+  if (pos != null) return pos;
 
-  if (lp == null) {
-    lp = new UserPoolLP(id)
-    lp.pool = pool
-    lp.user = user
-    lp.lpBalance = BigInt.zero()
-  }
-  return lp
+  let mgr = NonfungiblePositionManager.bind(NPM);
+  let res = mgr.try_positions(tokenId);
+  if (res.reverted) return null;
+
+  // NPM.positions(tokenId) gives token0/token1/liquidity (but NOT pool address)
+  let token0 = res.value.getToken0();
+  let token1 = res.value.getToken1();
+  let liquidity = res.value.getLiquidity();
+
+  pos = new V3Position(id);
+  pos.owner = ZERO as Bytes;
+  pos.pool = Bytes.empty(); // set later via setPoolForPosition()
+  pos.token0 = token0;
+  pos.token1 = token1;
+  pos.liquidity = liquidity;
+  pos.deposited0 = BigInt.zero();
+  pos.deposited1 = BigInt.zero();
+  pos.save();
+
+  return pos;
 }
 
-// Find owner from ERC721 Transfer event in receipt
-// For mint: looks for Transfer(0x0 -> user), returns `to`
-// For burn: looks for Transfer(user -> 0x0), returns `from`
-function findOwnerFromNFTTransfer(
-  receipt: ethereum.TransactionReceipt,
-  isMint: boolean
-): Address | null {
-  let logs = receipt.logs
-  
-  for (let i = 0; i < logs.length; i++) {
-    let log = logs[i]
-    
-    // Check if this log is from NonfungiblePositionManager
-    if (log.address.notEqual(NFT_POSITION_MANAGER)) {
-      continue
-    }
-    
-    // Check if topics exist and first topic is ERC721 Transfer
-    if (log.topics.length < 4) {
-      continue
-    }
-    
-    if (log.topics[0].notEqual(ERC721_TRANSFER_TOPIC)) {
-      continue
-    }
-    
-    // ERC721 Transfer: topics[1] = from, topics[2] = to, topics[3] = tokenId
-    let from = Address.fromBytes(Bytes.fromUint8Array(log.topics[1].subarray(12)))
-    let to = Address.fromBytes(Bytes.fromUint8Array(log.topics[2].subarray(12)))
-    
-    if (isMint) {
-      // For mint: look for Transfer(0x0 -> user) - NFT being minted to user
-      if (from.equals(ZERO_ADDRESS) && to.notEqual(ZERO_ADDRESS)) {
-        return to
-      }
-    } else {
-      // For burn: look for Transfer(user -> 0x0) - NFT being burned
-      // Or any transfer where from != 0x0 (user is the current holder)
-      if (from.notEqual(ZERO_ADDRESS)) {
-        return from
-      }
-    }
+/**
+ * Call this from your CLPool (pool-side) Mint/Burn handlers once you’ve
+ * extracted tokenId from the receipt.
+ *
+ * This is the correct place to bind tokenId -> pool without “indexing pools from NPM”.
+ */
+export function setPoolForPosition(tokenId: BigInt, poolAddr: Address): void {
+  let pos = V3Position.load(tokenId.toString());
+  if (pos == null) {
+    // if we haven't seen this tokenId yet via NPM events, initialize it once
+    pos = getOrInitPosition(tokenId);
+    if (pos == null) return;
   }
-  
-  return null
-}
 
-// Resolve the actual owner (LP holder) from ERC721 Transfer events
-function resolveOwnerForMint(event: ethereum.Event): Address {
-  let receipt = event.receipt
-  if (receipt !== null) {
-    let owner = findOwnerFromNFTTransfer(receipt, true)
-    if (owner !== null) {
-      return owner
-    }
-  }
-  // Fallback to transaction.from
-  return event.transaction.from
-}
-
-function resolveOwnerForBurn(event: ethereum.Event): Address {
-  let receipt = event.receipt
-  if (receipt !== null) {
-    let owner = findOwnerFromNFTTransfer(receipt, false)
-    if (owner !== null) {
-      return owner
-    }
-  }
-  // Fallback to transaction.from
-  return event.transaction.from
-}
-
-export function handleV3Mint(event: Mint): void {
-  let pool = getOrCreatePool(event.address)
-  
-  let owner: Address = event.params.owner
-  
-  // If owner is NFT position manager, resolve the actual LP holder
-  // by looking for ERC721 Transfer event (NFT minted to user)
-  if (owner.equals(NFT_POSITION_MANAGER)) {
-    owner = resolveOwnerForMint(event)
-  }
-  
-  let liquidity = event.params.amount
-  let amount0 = event.params.amount0
-  let amount1 = event.params.amount1
-  
-  // Track liquidity balance for proportional withdrawal
-  if (liquidity.gt(BigInt.zero())) {
-    let userLp = getOrCreateUserPoolLP(event.address, owner)
-    userLp.lpBalance = userLp.lpBalance.plus(liquidity)
-    userLp.save()
-  }
-  
-  if (pool.token0.length > 0 && amount0.gt(BigInt.zero())) {
-    let a0 = getOrCreateAttribution(event.address, owner, pool.token0)
-    a0.depositedBalance = a0.depositedBalance.plus(amount0)
-    a0.save()
-  }
-  
-  if (pool.token1.length > 0 && amount1.gt(BigInt.zero())) {
-    let a1 = getOrCreateAttribution(event.address, owner, pool.token1)
-    a1.depositedBalance = a1.depositedBalance.plus(amount1)
-    a1.save()
+  // only set if unset OR changed (shouldn’t change in practice, but safe)
+  let poolBytes = poolAddr as Bytes;
+  if (pos.pool.length == 0 || pos.pool.notEqual(poolBytes)) {
+    pos.pool = poolBytes;
+    pos.save();
   }
 }
 
-export function handleV3Burn(event: Burn): void {
-  let pool = getOrCreatePool(event.address)
-  
-  let owner: Address = event.params.owner
-  
-  // If owner is NFT position manager, resolve the actual LP holder
-  // by looking for ERC721 Transfer event (user's NFT)
-  if (owner.equals(NFT_POSITION_MANAGER)) {
-    owner = resolveOwnerForBurn(event)
+/**
+ * Helper: apply a delta to LPTokenAttribution for a position, if pool is known.
+ */
+function applyAttributionDelta(pos: V3Position, user: Bytes, token: Bytes, delta: BigInt): void {
+  if (pos.pool.length == 0) return; // can't attribute without pool binding
+  let a = getOrCreateAttribution(pos.pool, user, token);
+  a.depositedBalance = a.depositedBalance.plus(delta);
+  a.depositedBalance = clampNonNegative(a.depositedBalance);
+  a.save();
+}
+
+/**
+ * When liquidity increases: treat amount0/amount1 as deposit added to the POSITION.
+ * Also add to user attribution for that pool+token (only if pool known).
+ */
+export function handleIncreaseLiquidity(event: IncreaseLiquidity): void {
+  let tokenId = event.params.tokenId;
+
+  let pos = getOrInitPosition(tokenId);
+  if (pos == null) return;
+
+  // Prefer tracked owner (from Transfer). Else fallback to tx.from
+  let ownerAddr = event.transaction.from;
+  if (isAddressBytes(pos.owner)) {
+    ownerAddr = Address.fromBytes(pos.owner);
   }
-  
-  let liquidityRemoved = event.params.amount
-  
-  // Get user's liquidity balance for proportional calculation
-  let userLp = getOrCreateUserPoolLP(event.address, owner)
-  let totalLiquidity = userLp.lpBalance
-  
-  // Calculate proportion: liquidityRemoved / totalLiquidity
-  // Use high precision (18 decimals) for ratio calculation
-  let PRECISION = BigInt.fromI32(10).pow(18)
-  
-  if (totalLiquidity.gt(BigInt.zero()) && liquidityRemoved.gt(BigInt.zero())) {
-    // ratio = liquidityRemoved * PRECISION / totalLiquidity
-    let ratio = liquidityRemoved.times(PRECISION).div(totalLiquidity)
-    
-    // Deduct liquidity balance
-    userLp.lpBalance = userLp.lpBalance.minus(liquidityRemoved)
-    if (userLp.lpBalance.lt(BigInt.zero())) {
-      userLp.lpBalance = BigInt.zero()
-    }
-    userLp.save()
-    
-    // Deduct proportionally from deposited balances
-    if (pool.token0.length > 0) {
-      let a0 = getOrCreateAttribution(event.address, owner, pool.token0)
-      if (a0.depositedBalance.gt(BigInt.zero())) {
-        // deduction = depositedBalance * ratio / PRECISION
-        let deduction = a0.depositedBalance.times(ratio).div(PRECISION)
-        a0.depositedBalance = a0.depositedBalance.minus(deduction)
-        if (a0.depositedBalance.lt(BigInt.zero())) {
-          a0.depositedBalance = BigInt.zero()
-        }
-        a0.save()
-      }
-    }
-    
-    if (pool.token1.length > 0) {
-      let a1 = getOrCreateAttribution(event.address, owner, pool.token1)
-      if (a1.depositedBalance.gt(BigInt.zero())) {
-        // deduction = depositedBalance * ratio / PRECISION
-        let deduction = a1.depositedBalance.times(ratio).div(PRECISION)
-        a1.depositedBalance = a1.depositedBalance.minus(deduction)
-        if (a1.depositedBalance.lt(BigInt.zero())) {
-          a1.depositedBalance = BigInt.zero()
-        }
-        a1.save()
-      }
-    }
+
+  let amount0 = event.params.amount0;
+  let amount1 = event.params.amount1;
+  let liqDelta = event.params.liquidity;
+
+  // update position liquidity + deposits
+  pos.liquidity = pos.liquidity.plus(liqDelta);
+  pos.deposited0 = pos.deposited0.plus(amount0);
+  pos.deposited1 = pos.deposited1.plus(amount1);
+  pos.owner = ownerAddr as Bytes;
+  pos.save();
+
+  // aggregate to LPTokenAttribution (only works once pool is bound)
+  applyAttributionDelta(pos, ownerAddr as Bytes, pos.token0, amount0);
+  applyAttributionDelta(pos, ownerAddr as Bytes, pos.token1, amount1);
+}
+
+/**
+ * When liquidity decreases: withdraw is PROPORTIONAL:
+ * deposited -= deposited * (liquidityRemoved / positionLiquidityBefore)
+ *
+ * (This matches your new requirement: deduct based on LP share removed.)
+ */
+export function handleDecreaseLiquidity(event: DecreaseLiquidity): void {
+  let tokenId = event.params.tokenId;
+
+  let pos = V3Position.load(tokenId.toString());
+  if (pos == null) {
+    pos = getOrInitPosition(tokenId);
+    if (pos == null) return;
   }
+
+  let ownerAddr = event.transaction.from;
+  if (isAddressBytes(pos.owner)) {
+    ownerAddr = Address.fromBytes(pos.owner);
+  }
+
+  let liqRemoved = event.params.liquidity;
+  let liqBefore = pos.liquidity;
+
+  if (liqBefore.le(BigInt.zero()) || liqRemoved.le(BigInt.zero())) return;
+
+  // ratio = liqRemoved / liqBefore with 1e18 precision
+  let PRECISION = BigInt.fromI32(10).pow(18);
+  let ratio = liqRemoved.times(PRECISION).div(liqBefore);
+
+  // proportional deductions from "net deposited"
+  let d0 = pos.deposited0.times(ratio).div(PRECISION);
+  let d1 = pos.deposited1.times(ratio).div(PRECISION);
+
+  pos.deposited0 = clampNonNegative(pos.deposited0.minus(d0));
+  pos.deposited1 = clampNonNegative(pos.deposited1.minus(d1));
+
+  // update liquidity
+  pos.liquidity = clampNonNegative(pos.liquidity.minus(liqRemoved));
+
+  pos.owner = ownerAddr as Bytes;
+  pos.save();
+
+  // aggregate to LPTokenAttribution as negative deltas
+  applyAttributionDelta(pos, ownerAddr as Bytes, pos.token0, d0.neg());
+  applyAttributionDelta(pos, ownerAddr as Bytes, pos.token1, d1.neg());
+
+  // Optional: remove fully burned positions (only if you're sure you won't see it again)
+  // if (pos.liquidity.isZero()) store.remove("V3Position", tokenId.toString());
+}
+
+/**
+ * NFT transfer moves the WHOLE position "as is" to new owner:
+ * - subtract current position deposits from old owner attribution
+ * - add to new owner attribution
+ * - update position.owner
+ */
+export function handlePositionTransfer(event: Transfer): void {
+  let tokenId = event.params.tokenId;
+  let from = event.params.from;
+  let to = event.params.to;
+
+  let pos = V3Position.load(tokenId.toString());
+  if (pos == null) {
+    pos = getOrInitPosition(tokenId);
+    if (pos == null) return;
+  }
+
+  // Mint transfer (0x0 -> to): just set owner
+  if (from.equals(ZERO)) {
+    pos.owner = to as Bytes;
+    pos.save();
+    return;
+  }
+
+  // Burn transfer (from -> 0x0): set owner to ZERO (or remove)
+  if (to.equals(ZERO)) {
+    pos.owner = to as Bytes;
+    pos.save();
+    return;
+  }
+
+  // Move attribution only if pool is known
+  if (pos.pool.length > 0) {
+    // subtract from old owner
+    applyAttributionDelta(pos, from as Bytes, pos.token0, pos.deposited0.neg());
+    applyAttributionDelta(pos, from as Bytes, pos.token1, pos.deposited1.neg());
+
+    // add to new owner
+    applyAttributionDelta(pos, to as Bytes, pos.token0, pos.deposited0);
+    applyAttributionDelta(pos, to as Bytes, pos.token1, pos.deposited1);
+  }
+
+  pos.owner = to as Bytes;
+  pos.save();
 }

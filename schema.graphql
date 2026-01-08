@@ -38,3 +38,15 @@ type V2TxRecipient @entity {
   lastLpFrom: Bytes!           # default to ZERO_ADDRESS
   lastLpAmount: BigInt!        # LP tokens being burned
 }
+
+
+type V3Position @entity {
+  id: ID!              # tokenId as string
+  owner: Bytes!
+  pool: Bytes!         # CLPool address
+  liquidity: BigInt!   # current liquidity of position
+  token0: Bytes!
+  token1: Bytes!
+  deposited0: BigInt!  # net deposited (proportional withdrawals)
+  deposited1: BigInt!
+}
